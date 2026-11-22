@@ -1,18 +1,28 @@
-export default function Home() {
+import { redirect } from "next/navigation";
+import { getCurrentStaffProfile } from "@/lib/auth/current-staff";
+import { RouteBookShell } from "./navigation-shell";
+
+export const dynamic = "force-dynamic";
+
+export default async function Home() {
+  const profile = await getCurrentStaffProfile();
+  if (!profile) {
+    redirect("/login");
+  }
+
   return (
-    <main className="flex min-h-screen items-center justify-center px-6 py-16">
-      <section className="w-full max-w-2xl rounded-2xl border border-slate-200 bg-white p-8 shadow-sm sm:p-12">
-        <p className="text-sm font-semibold uppercase tracking-[0.2em] text-blue-700">
-          RouteBook
+    <RouteBookShell role={profile.role}>
+      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+        <p className="text-sm font-semibold uppercase tracking-[0.16em] text-blue-700">
+          {profile.role === "SUPERVISOR" ? "Supervisor" : "Driver"} workspace
         </p>
-        <h1 className="mt-4 text-4xl font-bold tracking-tight text-slate-950 sm:text-5xl">
-          Your route, stock, and customer accounts in one place.
+        <h1 className="mt-3 text-3xl font-bold tracking-tight text-slate-950 sm:text-4xl">
+          Welcome, {profile.displayName}
         </h1>
-        <p className="mt-5 max-w-xl text-lg leading-8 text-slate-600">
-          The application foundation is ready. Driver visits, van stock, sales,
-          payments, and daily reconciliation can be built from here.
+        <p className="mt-4 max-w-2xl text-base leading-7 text-slate-600">
+          Your workspace for managing daily van-sales operations.
         </p>
       </section>
-    </main>
+    </RouteBookShell>
   );
 }
