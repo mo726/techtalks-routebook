@@ -27,7 +27,10 @@ The project uses the Next.js App Router, TypeScript, and Tailwind CSS 4.
    node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
    ```
 
-3. Apply `db/migrations/0001_staff_profiles.sql` to the Supabase database.
+3. Apply `db/migrations/0001_staff_profiles.sql`, then
+   `db/migrations/0002_routebook_core.sql`, to the Supabase database in order.
+   The second migration adds the customer, product, van-day, sales, payment,
+   reconciliation, and idempotency schema with constraints and indexes.
 4. An administrator creates staff users in Supabase Auth, then provisions each
    user in `routebook.staff_profiles` with the Auth user UUID, display name,
    and either `DRIVER` or `SUPERVISOR` role. There is no public registration
@@ -36,8 +39,10 @@ The project uses the Next.js App Router, TypeScript, and Tailwind CSS 4.
 
 The app reads the staff profile through its server-side `DATABASE_URL`
 connection. Keep the `routebook` schema private from the Supabase Data API.
-The migration grants `routebook_runtime` read-only access to staff profiles;
-future migrations must grant only the specific privileges the app needs.
+The migrations grant `routebook_runtime` only the privileges needed by the
+current schema, with posted payments, corrections, and reconciliation records
+not updateable or deletable by the runtime role. Future migrations must grant
+only the specific privileges the app needs.
 
 Useful checks:
 
