@@ -44,6 +44,12 @@ current schema, with posted payments, corrections, and reconciliation records
 not updateable or deletable by the runtime role. Future migrations must grant
 only the specific privileges the app needs.
 
+Future van-day mutation handlers should use
+`src/lib/db/van-day-transaction.ts` for the shared transaction, row lock, and
+idempotency-receipt flow. The helper does not create business API routes or
+pages; each handler remains responsible for authorization and its domain
+validation.
+
 Useful checks:
 
 ```bash

@@ -1,0 +1,401 @@
+import "server-only";
+import { createHash } from "node:crypto";
+import type { Pool, PoolClient, QueryResultRow } from "pg";
+import { getPool } from "./pool";
+
+type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
+export type OperationSuccessBody = {
+  success: true;
+  [key: string]: JsonValue;
+};
+
+export type VanDayState = "PREPARING" | "OPEN" | "CLOSED";
+
+export type LockedVanDay = {
+  id: string;
+  state: VanDayState;
+  revision: number;
+};
+
+export type TransactionOutcome = {
+  status: number;
+  body: OperationSuccessBody;
+};
+
+export type VanDayOperationResult = TransactionOutcome & {
+  replayed: boolean;
+};
+
+type OperationRow = QueryResultRow & {
+  method_route: string;
+  request_hash: string;
+  http_status: number | null;
+  response_body: unknown;
+};
+
+type VanDayRow = QueryResultRow & LockedVanDay;
+
+export class OperationKeyReuseError extends Error {
+  readonly status = 409;
+  readonly code = "KEY_REUSED";
+
+  constructor() {
+    super("The idempotency key was already used for a different request.");
+    this.name = "OperationKeyReuseError";
+  }
+}
+
+export class VanDayNotFoundError extends Error {
+  readonly status = 404;
+  readonly code = "VAN_DAY_NOT_FOUND";
+
+  constructor() {
+    super("The requested van day was not found.");
+    this.name = "VanDayNotFoundError";
+  }
+}
+
+export class RetryableTransactionError extends Error {
+  readonly status = 503;
+  readonly code = "TRANSACTION_RETRYABLE";
+  readonly retryable = true;
+
+  constructor(cause?: unknown) {
+    super("The operation could not complete because of temporary database contention.", {
+      cause,
+    });
+    this.name = "RetryableTransactionError";
+  }
+}
+
+export class InvalidOperationRequestError extends Error {
+  readonly status = 400;
+  readonly code = "INVALID_OPERATION_REQUEST";
+
+  constructor() {
+    super("The operation request must contain valid JSON data.");
+    this.name = "InvalidOperationRequestError";
+  }
+}
+
+type OperationContext = {
+  client: PoolClient;
+  vanDay: LockedVanDay;
+};
+
+type RunVanDayOperationOptions = {
+  actorId: string;
+  vanDayId: string;
+  requestKey: string;
+  methodRoute: string;
+  requestBody: unknown;
+  authorize: (
+    context: OperationContext & { replayed: boolean },
+  ) => Promise<void>;
+  execute: (context: OperationContext) => Promise<TransactionOutcome>;
+  pool?: Pick<Pool, "connect">;
+};
+
+const maxAttempts = 3;
+const uuidPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const transientSqlStates = new Set([
+  "08006",
+  "08007",
+  "40001",
+  "40P01",
+  "55P03",
+  "57014",
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeJson(
+  value: unknown,
+  seen = new WeakSet<object>(),
+): JsonValue {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
+    return value;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    if (seen.has(value)) {
+      throw new InvalidOperationRequestError();
+    }
+    seen.add(value);
+    const normalized = value.map((item) => normalizeJson(item, seen));
+    seen.delete(value);
+    return normalized;
+  }
+
+  if (isRecord(value)) {
+    const prototype = Object.getPrototypeOf(value);
+    if (
+      seen.has(value) ||
+      (prototype !== Object.prototype && prototype !== null)
+    ) {
+      throw new InvalidOperationRequestError();
+    }
+
+    seen.add(value);
+    const normalized = Object.create(null) as {
+      [key: string]: JsonValue;
+    };
+    for (const key of Object.keys(value).sort()) {
+      const property = value[key];
+      if (property === undefined) {
+        throw new InvalidOperationRequestError();
+      }
+      normalized[key] = normalizeJson(property, seen);
+    }
+    seen.delete(value);
+    return normalized;
+  }
+
+  throw new InvalidOperationRequestError();
+}
+
+function hashRequest(
+  methodRoute: string,
+  vanDayId: string,
+  requestBody: unknown,
+): string {
+  if (
+    !methodRoute.trim() ||
+    methodRoute.length > 240 ||
+    methodRoute !== methodRoute.trim()
+  ) {
+    throw new InvalidOperationRequestError();
+  }
+
+  const canonicalBody = JSON.stringify(normalizeJson(requestBody));
+  return createHash("sha256")
+    .update(`${methodRoute}\n${vanDayId}\n${canonicalBody}`)
+    .digest("hex");
+}
+
+function parseSuccessBody(value: unknown): OperationSuccessBody | null {
+  if (!isRecord(value) || value.success !== true) {
+    return null;
+  }
+
+  try {
+    const normalized = normalizeJson(value);
+    if (
+      isRecord(normalized) &&
+      normalized.success === true &&
+      Buffer.byteLength(JSON.stringify(normalized), "utf8") <= 65536
+    ) {
+      return normalized as OperationSuccessBody;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function validateOutcome(outcome: TransactionOutcome): OperationSuccessBody {
+  if (
+    !Number.isInteger(outcome.status) ||
+    outcome.status < 200 ||
+    outcome.status > 299
+  ) {
+    throw new Error("Idempotent operations must store a successful HTTP outcome.");
+  }
+
+  const body = parseSuccessBody(outcome.body);
+  if (!body) {
+    throw new Error("Idempotent operations must store a bounded success envelope.");
+  }
+
+  return body;
+}
+
+function getSqlState(error: unknown): string | undefined {
+  if (!isRecord(error) || typeof error.code !== "string") {
+    return undefined;
+  }
+  return error.code;
+}
+
+function isTransientDatabaseError(error: unknown): boolean {
+  const code = getSqlState(error);
+  return code !== undefined && transientSqlStates.has(code);
+}
+
+function retryDelay(attempt: number): Promise<void> {
+  const delayMs = 20 * attempt + Math.floor(Math.random() * 31);
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
+}
+
+async function lockVanDay(
+  client: PoolClient,
+  vanDayId: string,
+): Promise<LockedVanDay> {
+  const result = await client.query<VanDayRow>(
+    `SELECT id, state, revision
+       FROM routebook.van_days
+      WHERE id = $1
+      FOR UPDATE`,
+    [vanDayId],
+  );
+  const vanDay = result.rows[0];
+
+  if (!vanDay) {
+    throw new VanDayNotFoundError();
+  }
+
+  return vanDay;
+}
+
+async function rollback(client: PoolClient): Promise<void> {
+  await client.query("ROLLBACK");
+}
+
+export async function runVanDayOperation({
+  actorId,
+  vanDayId,
+  requestKey,
+  methodRoute,
+  requestBody,
+  authorize,
+  execute,
+  pool,
+}: RunVanDayOperationOptions): Promise<VanDayOperationResult> {
+  if (!uuidPattern.test(requestKey)) {
+    throw new InvalidOperationRequestError();
+  }
+
+  const database = pool ?? getPool();
+  const requestHash = hashRequest(methodRoute, vanDayId, requestBody);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const client = await database.connect();
+    let transactionStarted = false;
+    let shouldRetry = false;
+
+    try {
+      await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+      transactionStarted = true;
+      await client.query("SET LOCAL lock_timeout = '2s'");
+      await client.query("SET LOCAL statement_timeout = '5s'");
+
+      const inserted = await client.query<{ id: string }>(
+        `INSERT INTO routebook.operations
+           (actor_id, request_key, method_route, request_hash)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (actor_id, request_key) DO NOTHING
+         RETURNING id`,
+        [actorId, requestKey, methodRoute, requestHash],
+      );
+
+      const replayed = inserted.rowCount === 0;
+      let existingOperation: OperationRow | undefined;
+
+      if (replayed) {
+        const existing = await client.query<OperationRow>(
+          `SELECT method_route, request_hash, http_status, response_body
+             FROM routebook.operations
+            WHERE actor_id = $1 AND request_key = $2
+            FOR UPDATE`,
+          [actorId, requestKey],
+        );
+        existingOperation = existing.rows[0];
+
+        if (!existingOperation) {
+          throw new Error("The operation receipt could not be read after a key conflict.");
+        }
+
+        if (
+          existingOperation.method_route !== methodRoute ||
+          existingOperation.request_hash !== requestHash
+        ) {
+          throw new OperationKeyReuseError();
+        }
+      }
+
+      const vanDay = await lockVanDay(client, vanDayId);
+      const context = { client, vanDay };
+      await authorize({ ...context, replayed });
+
+      if (replayed) {
+        const body = parseSuccessBody(existingOperation?.response_body);
+        const status = existingOperation?.http_status;
+        if (!body || status === null || status === undefined) {
+          throw new Error("The completed operation receipt is invalid.");
+        }
+
+        await client.query("COMMIT");
+        transactionStarted = false;
+        return { status, body, replayed: true };
+      }
+
+      const outcome = await execute(context);
+      const body = validateOutcome(outcome);
+      const completed = await client.query(
+        `UPDATE routebook.operations
+            SET http_status = $1, response_body = $2::jsonb
+          WHERE actor_id = $3 AND request_key = $4
+            AND http_status IS NULL
+            AND response_body IS NULL`,
+        [
+          outcome.status,
+          JSON.stringify(body),
+          actorId,
+          requestKey,
+        ],
+      );
+
+      if (completed.rowCount !== 1) {
+        throw new Error("The operation receipt could not be completed.");
+      }
+
+      await client.query("COMMIT");
+      transactionStarted = false;
+      return { status: outcome.status, body, replayed: false };
+    } catch (error) {
+      if (transactionStarted) {
+        try {
+          await rollback(client);
+        } catch {
+          // Preserve the transaction error; releasing the connection discards its state.
+        }
+      }
+
+      if (!isTransientDatabaseError(error)) {
+        throw error;
+      }
+
+      if (attempt === maxAttempts) {
+        throw new RetryableTransactionError(error);
+      }
+      shouldRetry = true;
+    } finally {
+      client.release();
+    }
+
+    if (shouldRetry) {
+      await retryDelay(attempt);
+    }
+  }
+
+  throw new RetryableTransactionError();
+}
