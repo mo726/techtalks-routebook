@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiClientError, getDriverVisits } from "./client";
+import { ApiClientError, getDriverStock, getDriverVisits } from "./client";
 
 const responseBody = {
   success: true,
@@ -41,6 +41,46 @@ describe("getDriverVisits", () => {
         headers: { Accept: "application/json" },
       }),
     );
+  });
+
+  describe("getDriverStock", () => {
+    it("requests and validates the current driver's stock", async () => {
+      const payload = {
+        success: true,
+        data: {
+          vanDay: null,
+          stock: [
+            {
+              product: {
+                id: "44444444-4444-4444-8444-444444444444",
+                name: "Water",
+                unit: "bottle",
+              },
+              openingQuantity: 100,
+              availableQuantity: 85,
+            },
+          ],
+        },
+      };
+      const fetcher = vi.fn(async () => Response.json(payload));
+
+      await expect(getDriverStock(undefined, fetcher)).resolves.toEqual(payload);
+      expect(fetcher).toHaveBeenCalledWith(
+        "/api/driver/stock",
+        expect.objectContaining({ cache: "no-store" }),
+      );
+    });
+
+    it("reports failed stock reads instead of using an empty fallback", async () => {
+      const fetcher = vi.fn(async () =>
+        Response.json({ error: { code: "DATABASE_UNAVAILABLE" } }, { status: 503 }),
+      );
+
+      await expect(getDriverStock(undefined, fetcher)).rejects.toMatchObject({
+        status: 503,
+        code: "DATABASE_UNAVAILABLE",
+      });
+    });
   });
 
   it("surfaces API errors without treating them as empty visits", async () => {

@@ -37,9 +37,10 @@ The project uses the Next.js App Router, TypeScript, and Tailwind CSS 4.
    or in-app role editor.
 5. Start the app with `npm run dev`. Staff sign in at `/login`.
 
-The driver workspace includes an assigned-visits page at `/driver/visits` for
-drivers with an open van day. It reads only visits assigned to the signed-in
-driver. Other navigation destinations are not implemented yet.
+The driver workspace includes assigned visits at `/driver/visits` and current
+van stock at `/driver/stock` for drivers with an open van day. These pages read
+only data for the signed-in driver. Other navigation destinations are not
+implemented yet.
 
 The app reads the staff profile through its server-side `DATABASE_URL`
 connection. Keep the `routebook` schema private from the Supabase Data API.
