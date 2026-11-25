@@ -49,6 +49,13 @@ implemented yet.
 A supervisor van-load demo is available at `/supervisor/van-load`. It uses
 mock data, does not persist changes, and is not connected to the database.
 
+`GET /api/van-days/{id}/stock` returns a van day's opening and available stock.
+Drivers can read only their assigned day; supervisors can read any day.
+Available quantity is derived from the opening load minus invoice-line
+quantities, so invoice corrections are reflected without storing a mutable
+stock counter. The driver workspace continues to use
+`GET /api/driver/stock` for the driver's current open day.
+
 The app reads the staff profile through its server-side `DATABASE_URL`
 connection. Keep the `routebook` schema private from the Supabase Data API.
 The migrations grant `routebook_runtime` only the privileges needed by the
