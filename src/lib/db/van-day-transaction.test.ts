@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import type { Pool, PoolClient } from "pg";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -23,6 +24,11 @@ function createDatabase() {
   let receipt: StoredReceipt | null = null;
   let receiptAtTransactionStart: StoredReceipt | null = null;
   let failingStatement: { fragment: string; remaining: number } | null = null;
+  let commitDisconnect: {
+    committed: boolean;
+    emitError: boolean;
+    remaining: number;
+  } | null = null;
   const release = vi.fn();
 
   const query = vi.fn(
@@ -85,11 +91,23 @@ function createDatabase() {
         receipt = receiptAtTransactionStart;
       }
 
+      if (sql === "COMMIT" && commitDisconnect && commitDisconnect.remaining > 0) {
+        commitDisconnect.remaining -= 1;
+        if (!commitDisconnect.committed) {
+          receipt = receiptAtTransactionStart;
+        }
+        const error = new Error("Connection terminated unexpectedly");
+        if (commitDisconnect.emitError) {
+          client.emit("error", error);
+        }
+        throw error;
+      }
+
       return { rows: [], rowCount: 1 };
     },
   );
-  const client = { query, release } as unknown as PoolClient;
-  const connect = vi.fn(async () => client);
+  const client = Object.assign(new EventEmitter(), { query, release });
+  const connect = vi.fn(async () => client as unknown as PoolClient);
   const pool = { connect } as unknown as Pick<Pool, "connect">;
 
   return {
@@ -97,9 +115,17 @@ function createDatabase() {
     query,
     release,
     connect,
+    client,
     pool,
     failStatement(statement: string, times = 1) {
       failingStatement = { fragment: statement, remaining: times };
+    },
+    disconnectOnCommit({ committed, emitError = true, times = 1 }: {
+      committed: boolean;
+      emitError?: boolean;
+      times?: number;
+    }) {
+      commitDisconnect = { committed, emitError, remaining: times };
     },
   };
 }
@@ -111,7 +137,7 @@ const successBody: OperationSuccessBody = {
 
 function makeOperation(
   pool: Pick<Pool, "connect">,
-  overrides: Partial<Parameters<typeof runVanDayOperation>[0]> = {},
+  overrides: Partial<Extract<Parameters<typeof runVanDayOperation>[0], { vanDayId: string }>> = {},
 ) {
   return {
     actorId: "staff-1",
@@ -189,6 +215,26 @@ describe("runVanDayOperation", () => {
     expect(database.statements).toContain("ROLLBACK");
   });
 
+  it("distinguishes resources on the same van day when comparing request keys", async () => {
+    const database = createDatabase();
+    const { vanDayId, ...operation } = makeOperation(database.pool);
+    const resolveVanDayId = vi.fn(async () => vanDayId);
+    const firstTarget = { id: "invoice-1", resolveVanDayId };
+
+    await runVanDayOperation({ ...operation, resource: firstTarget });
+    await expect(runVanDayOperation({ ...operation, resource: firstTarget })).resolves.toMatchObject({
+      status: 201,
+      replayed: true,
+    });
+    await expect(runVanDayOperation({
+      ...operation,
+      resource: { id: "invoice-2", resolveVanDayId },
+    })).rejects.toBeInstanceOf(OperationKeyReuseError);
+    expect(resolveVanDayId).toHaveBeenCalledWith(expect.anything(), "invoice-1");
+    expect(resolveVanDayId).toHaveBeenCalledTimes(2);
+    expect(operation.execute).toHaveBeenCalledOnce();
+  });
+
   it("rolls back when the business operation fails", async () => {
     const database = createDatabase();
     const operation = makeOperation(database.pool, {
@@ -231,6 +277,63 @@ describe("runVanDayOperation", () => {
     expect(database.connect).toHaveBeenCalledTimes(3);
     expect(database.release).toHaveBeenCalledTimes(3);
     expect(operation.execute).not.toHaveBeenCalled();
+  });
+
+  it("reconnects and replays the receipt when the commit succeeded before the connection dropped", async () => {
+    const database = createDatabase();
+    const operation = makeOperation(database.pool);
+    database.disconnectOnCommit({ committed: true });
+
+    await expect(runVanDayOperation(operation)).resolves.toEqual({
+      status: 201,
+      body: successBody,
+      replayed: true,
+    });
+    expect(database.connect).toHaveBeenCalledTimes(2);
+    expect(database.release).toHaveBeenNthCalledWith(1, true);
+    expect(database.release).toHaveBeenNthCalledWith(2, false);
+    expect(database.client.listenerCount("error")).toBe(0);
+    expect(database.statements).not.toContain("ROLLBACK");
+    expect(operation.execute).toHaveBeenCalledOnce();
+  });
+
+  it("uses the same key to try the mutation again when the disconnect prevented the commit", async () => {
+    const database = createDatabase();
+    const operation = makeOperation(database.pool);
+    database.disconnectOnCommit({ committed: false, emitError: false });
+
+    await expect(runVanDayOperation(operation)).resolves.toEqual({
+      status: 201,
+      body: successBody,
+      replayed: false,
+    });
+    expect(database.release).toHaveBeenNthCalledWith(1, true);
+    expect(operation.execute).toHaveBeenCalledTimes(2);
+    const receiptClaims = database.query.mock.calls.filter(([sql]) =>
+      sql.startsWith("INSERT INTO routebook.operations"),
+    );
+    expect(receiptClaims).toHaveLength(2);
+    expect(receiptClaims[1]).toEqual(receiptClaims[0]);
+  });
+
+  it("directs the caller to retry with the original key if it cannot confirm a commit", async () => {
+    const database = createDatabase();
+    const operation = makeOperation(database.pool);
+    database.disconnectOnCommit({ committed: true, times: 3 });
+
+    await expect(runVanDayOperation(operation)).rejects.toMatchObject({
+      code: "TRANSACTION_RETRYABLE",
+      status: 503,
+      retryable: true,
+      message: expect.stringContaining("same idempotency key"),
+    });
+    expect(database.connect).toHaveBeenCalledTimes(3);
+    await expect(runVanDayOperation(operation)).resolves.toEqual({
+      status: 201,
+      body: successBody,
+      replayed: true,
+    });
+    expect(operation.execute).toHaveBeenCalledOnce();
   });
 
   it("rejects request bodies that cannot be represented as JSON", async () => {

@@ -306,6 +306,56 @@ export function calculatePaymentSettlement(
   };
 }
 
+export function assertPaymentDayOpen(status: VanDayStatus): void {
+  if (status === "CLOSED") {
+    throw new PaymentError("DAY_CLOSED", "Payments require an OPEN van day.");
+  }
+
+  if (status !== "OPEN") {
+    throw new PaymentError("DAY_NOT_OPEN", "The van day is still being prepared.");
+  }
+}
+
+export function createPaymentReceipt(
+  invoice: Pick<PaymentInvoice, "id" | "version" | "totalCents" | "paidCents">,
+  input: Pick<RecordPaymentInput, "amountCents" | "expectedInvoiceVersion">,
+  receivedBy: string,
+  { now = () => new Date(), generateId = randomUUID }: PaymentServiceDependencies = {},
+): PaymentReceipt {
+  if (invoice.version !== input.expectedInvoiceVersion) {
+    throw new PaymentError("STALE_VERSION", "This invoice changed. Refresh it before paying.");
+  }
+
+  if (
+    invoice.totalCents < 1n ||
+    invoice.totalCents > MAX_CENTS ||
+    invoice.paidCents < 0n ||
+    invoice.paidCents > MAX_CENTS
+  ) {
+    throw new PaymentError("INVALID_INVOICE_DATA", "Stored invoice amounts are invalid.");
+  }
+
+  return {
+    ...calculatePaymentSettlement(invoice.totalCents, invoice.paidCents, input.amountCents),
+    invoiceVersion: invoice.version + 1,
+    payment: {
+      id: generateId(),
+      invoiceId: invoice.id,
+      amountCents: input.amountCents,
+      receivedBy,
+      receivedAt: now().toISOString(),
+    },
+  };
+}
+
+/**
+ * Framework-agnostic reference implementation of the API-10 rules.
+ *
+ * The live HTTP route uses `recordInvoicePayment` in `postgres-payment.ts`
+ * with the shared `runVanDayOperation` helper. This class remains useful for
+ * unit-testing the domain flow against a `PaymentStore`; both paths share the
+ * pure helpers in this module so the rules stay identical.
+ */
 export class PaymentService {
   private readonly now: () => Date;
   private readonly generateId: () => string;
@@ -357,57 +407,18 @@ export class PaymentService {
       }
 
       this.assertAssignedDriver(actor, invoice);
+      assertPaymentDayOpen(invoice.dayStatus);
+      const receipt = createPaymentReceipt(invoice, input, actor.id, {
+        now: this.now,
+        generateId: this.generateId,
+      });
 
-      if (invoice.dayStatus === "CLOSED") {
-        throw new PaymentError(
-          "DAY_CLOSED",
-          "Payments require an OPEN van day.",
-        );
-      }
-
-      if (invoice.dayStatus !== "OPEN") {
-        throw new PaymentError(
-          "DAY_NOT_OPEN",
-          "The van day is still being prepared.",
-        );
-      }
-
-      if (invoice.version !== input.expectedInvoiceVersion) {
-        throw new PaymentError(
-          "STALE_VERSION",
-          "This invoice changed. Refresh it before paying.",
-        );
-      }
-
-      this.assertStoredInvoiceAmounts(invoice);
-
-      const settlement = calculatePaymentSettlement(
-        invoice.totalCents,
-        invoice.paidCents,
-        input.amountCents,
-      );
-
-      const payment: PaymentRecord = {
-        id: this.generateId(),
-        invoiceId: invoice.id,
-        amountCents: input.amountCents,
-        receivedBy: actor.id,
-        receivedAt: this.now().toISOString(),
-      };
-
-      const receipt: PaymentReceipt = {
-        payment,
-        invoiceVersion: invoice.version + 1,
-        totalPaidCents: settlement.totalPaidCents,
-        balanceCents: settlement.balanceCents,
-      };
-
-      await tx.insertPayment(payment);
+      await tx.insertPayment(receipt.payment);
       await tx.updateInvoiceAfterPayment({
         invoiceId: invoice.id,
         expectedVersion: invoice.version,
-        totalPaidCents: settlement.totalPaidCents,
-        nextVersion: invoice.version + 1,
+        totalPaidCents: receipt.totalPaidCents,
+        nextVersion: receipt.invoiceVersion,
         nextDayRevision: invoice.dayRevision + 1,
       });
       await tx.insertOperation({
@@ -528,22 +539,6 @@ export class PaymentService {
       throw new PaymentError(
         "FORBIDDEN",
         "Only the assigned driver may record this payment.",
-      );
-    }
-  }
-
-  private assertStoredInvoiceAmounts(
-    invoice: PaymentInvoice,
-  ): void {
-    if (
-      invoice.totalCents < 1n ||
-      invoice.totalCents > MAX_CENTS ||
-      invoice.paidCents < 0n ||
-      invoice.paidCents > MAX_CENTS
-    ) {
-      throw new PaymentError(
-        "INVALID_INVOICE_DATA",
-        "Stored invoice amounts are invalid.",
       );
     }
   }

@@ -68,9 +68,10 @@ export class RetryableTransactionError extends Error {
   readonly retryable = true;
 
   constructor(cause?: unknown) {
-    super("The operation could not complete because of temporary database contention.", {
-      cause,
-    });
+    super(
+      "The operation could not be confirmed. Retry with the same idempotency key.",
+      { cause },
+    );
     this.name = "RetryableTransactionError";
   }
 }
@@ -90,9 +91,18 @@ type OperationContext = {
   vanDay: LockedVanDay;
 };
 
+type VanDayTarget =
+  | { vanDayId: string; resource?: never }
+  | {
+      vanDayId?: never;
+      resource: {
+        id: string;
+        resolveVanDayId: (client: PoolClient, resourceId: string) => Promise<string>;
+      };
+    };
+
 type RunVanDayOperationOptions = {
   actorId: string;
-  vanDayId: string;
   requestKey: string;
   methodRoute: string;
   requestBody: unknown;
@@ -101,18 +111,41 @@ type RunVanDayOperationOptions = {
   ) => Promise<void>;
   execute: (context: OperationContext) => Promise<TransactionOutcome>;
   pool?: Pick<Pool, "connect">;
-};
+} & VanDayTarget;
 
 const maxAttempts = 3;
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const transientSqlStates = new Set([
-  "08006",
-  "08007",
+
+export function isOperationRequestKey(value: string | null): value is string {
+  return value !== null && uuidPattern.test(value);
+}
+
+const retryableTransactionCodes = new Set([
   "40001",
   "40P01",
   "55P03",
   "57014",
+]);
+
+const retryableConnectionCodes = new Set([
+  "08003",
+  "08006",
+  "08007",
+  "57P01",
+  "57P02",
+  "57P03",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EPIPE",
+  "ETIMEDOUT",
+]);
+
+const pgDisconnectMessages = new Set([
+  "Connection terminated",
+  "Connection terminated unexpectedly",
+  "Client has encountered a connection error and is not queryable",
+  "Client was closed and is not queryable",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -174,7 +207,7 @@ function normalizeJson(
 
 function hashRequest(
   methodRoute: string,
-  vanDayId: string,
+  targetId: string,
   requestBody: unknown,
 ): string {
   if (
@@ -187,7 +220,7 @@ function hashRequest(
 
   const canonicalBody = JSON.stringify(normalizeJson(requestBody));
   return createHash("sha256")
-    .update(`${methodRoute}\n${vanDayId}\n${canonicalBody}`)
+    .update(`${methodRoute}\n${targetId}\n${canonicalBody}`)
     .digest("hex");
 }
 
@@ -229,16 +262,18 @@ function validateOutcome(outcome: TransactionOutcome): OperationSuccessBody {
   return body;
 }
 
-function getSqlState(error: unknown): string | undefined {
-  if (!isRecord(error) || typeof error.code !== "string") {
-    return undefined;
-  }
-  return error.code;
+function databaseErrorCode(error: unknown): string | undefined {
+  return isRecord(error) && typeof error.code === "string" ? error.code : undefined;
 }
 
-function isTransientDatabaseError(error: unknown): boolean {
-  const code = getSqlState(error);
-  return code !== undefined && transientSqlStates.has(code);
+function isDatabaseConnectionError(
+  error: unknown,
+  code: string | undefined,
+): boolean {
+  return (
+    (code !== undefined && retryableConnectionCodes.has(code)) ||
+    (error instanceof Error && pgDisconnectMessages.has(error.message))
+  );
 }
 
 function retryDelay(attempt: number): Promise<void> {
@@ -273,6 +308,7 @@ async function rollback(client: PoolClient): Promise<void> {
 export async function runVanDayOperation({
   actorId,
   vanDayId,
+  resource,
   requestKey,
   methodRoute,
   requestBody,
@@ -280,19 +316,29 @@ export async function runVanDayOperation({
   execute,
   pool,
 }: RunVanDayOperationOptions): Promise<VanDayOperationResult> {
-  if (!uuidPattern.test(requestKey)) {
+  if (!isOperationRequestKey(requestKey)) {
     throw new InvalidOperationRequestError();
   }
 
   const database = pool ?? getPool();
-  const requestHash = hashRequest(methodRoute, vanDayId, requestBody);
+  const requestHash = hashRequest(
+    methodRoute,
+    resource ? resource.id : vanDayId,
+    requestBody,
+  );
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const client = await database.connect();
+    let client: PoolClient | undefined;
     let transactionStarted = false;
-    let shouldRetry = false;
+    let discardConnection = false;
+    const onConnectionError = () => {
+      discardConnection = true;
+    };
 
     try {
+      client = await database.connect();
+      // The pool delegates error handling while the client is checked out.
+      client.on("error", onConnectionError);
       await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
       transactionStarted = true;
       await client.query("SET LOCAL lock_timeout = '2s'");
@@ -332,7 +378,10 @@ export async function runVanDayOperation({
         }
       }
 
-      const vanDay = await lockVanDay(client, vanDayId);
+      const dayId = resource
+        ? await resource.resolveVanDayId(client, resource.id)
+        : vanDayId;
+      const vanDay = await lockVanDay(client, dayId);
       const context = { client, vanDay };
       await authorize({ ...context, replayed });
 
@@ -372,29 +421,36 @@ export async function runVanDayOperation({
       transactionStarted = false;
       return { status: outcome.status, body, replayed: false };
     } catch (error) {
-      if (transactionStarted) {
+      const code = databaseErrorCode(error);
+      discardConnection ||= isDatabaseConnectionError(error, code);
+      const retryable =
+        discardConnection ||
+        (code !== undefined && retryableTransactionCodes.has(code));
+
+      if (client && transactionStarted && !discardConnection) {
         try {
           await rollback(client);
         } catch {
-          // Preserve the transaction error; releasing the connection discards its state.
+          discardConnection = true;
         }
       }
 
-      if (!isTransientDatabaseError(error)) {
+      if (!retryable) {
         throw error;
       }
 
       if (attempt === maxAttempts) {
         throw new RetryableTransactionError(error);
       }
-      shouldRetry = true;
     } finally {
-      client.release();
+      if (client) {
+        client.removeListener("error", onConnectionError);
+        client.release(discardConnection);
+      }
     }
 
-    if (shouldRetry) {
-      await retryDelay(attempt);
-    }
+    // Reuse the same key to recover the receipt if COMMIT succeeded before disconnecting.
+    await retryDelay(attempt);
   }
 
   throw new RetryableTransactionError();
