@@ -83,6 +83,11 @@ The supervisor van-day API is database-backed:
   is PREPARING and requires the current `expectedRevision`.
 - `POST /api/van-days/{id}/open` opens a PREPARING day with the current
   `expectedRevision`, an active driver, and at least one loaded product.
+- `GET /api/van-days/{id}/stock` returns opening and available stock. Drivers
+  can read only their assigned day; supervisors can read any day. Available
+  quantities are derived from opening load minus invoice-line quantities, so
+  invoice corrections are reflected. The driver workspace continues to use
+  `GET /api/driver/stock` for the driver's current open day.
 
 All writes require same-origin CSRF validation and a UUID `Idempotency-Key`.
 Day updates lock the van-day row and commit their operation receipt atomically.

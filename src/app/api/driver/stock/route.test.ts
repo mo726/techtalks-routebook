@@ -79,10 +79,12 @@ describe("GET /api/driver/stock", () => {
       },
     });
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining("WHERE driver_id = $1 AND state = 'OPEN'"),
-      [driver.id],
+      expect.stringContaining("state = 'OPEN'"),
+      [null, false, driver.id],
     );
-    expect(query.mock.calls[0][0]).toContain("SUM(invoice_line.quantity)");
+    expect(query.mock.calls[0][0]).toContain(
+      "SUM(invoice_line.quantity)::bigint AS sold_quantity",
+    );
   });
 
   it("denies non-driver access without querying stock", async () => {
