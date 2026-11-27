@@ -69,6 +69,25 @@ idempotency-receipt flow. The helper does not create business API routes or
 pages; each handler remains responsible for authorization and its domain
 validation.
 
+## Van-day API
+
+The supervisor van-day API is database-backed:
+
+- `GET /api/van-days` lists van days; drivers see only their own, while
+  supervisors also receive active driver choices. Lists accept `cursor` and
+  `limit` (25 by default, maximum 100).
+- `POST /api/van-days` creates a PREPARING day for an active driver.
+- `GET` and `POST /api/van-days/{id}/visits` read visits within the caller's
+  scope or append an active customer visit while the day is PREPARING.
+- `PUT /api/van-days/{id}/load` replaces the complete load only while the day
+  is PREPARING and requires the current `expectedRevision`.
+- `POST /api/van-days/{id}/open` opens a PREPARING day with the current
+  `expectedRevision`, an active driver, and at least one loaded product.
+
+All writes require same-origin CSRF validation and a UUID `Idempotency-Key`.
+Day updates lock the van-day row and commit their operation receipt atomically.
+The read endpoints are private and non-cacheable.
+
 ## Money and payments
 
 Exact currency arithmetic, invoice validation, and payment service logic are

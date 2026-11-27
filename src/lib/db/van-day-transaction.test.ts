@@ -7,6 +7,7 @@ import {
   InvalidOperationRequestError,
   OperationKeyReuseError,
   RetryableTransactionError,
+  runStandaloneOperation,
   runVanDayOperation,
   type OperationSuccessBody,
 } from "./van-day-transaction";
@@ -253,5 +254,77 @@ describe("runVanDayOperation", () => {
       InvalidOperationRequestError,
     );
     expect(database.connect).not.toHaveBeenCalled();
+  });
+});
+
+describe("runStandaloneOperation", () => {
+  it("commits create operations with a durable idempotency receipt", async () => {
+    const database = createDatabase();
+    const execute = vi.fn(async () => ({ status: 201, body: successBody }));
+    const operation = {
+      actorId: "staff-1",
+      requestKey: "11111111-1111-4111-8111-111111111111",
+      methodRoute: "POST /api/van-days",
+      requestBody: { vanCode: "VAN-01" },
+      authorize: vi.fn(async () => undefined),
+      execute,
+      pool: database.pool,
+    };
+
+    await expect(runStandaloneOperation(operation)).resolves.toMatchObject({
+      status: 201,
+      replayed: false,
+    });
+    expect(
+      database.statements.some((statement) =>
+        statement.startsWith("SELECT id, state, revision"),
+      ),
+    ).toBe(false);
+    expect(database.statements).toContain("COMMIT");
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it("replays successful standalone operations without repeating their effect", async () => {
+    const database = createDatabase();
+    const execute = vi.fn(async () => ({ status: 201, body: successBody }));
+    const operation = {
+      actorId: "staff-1",
+      requestKey: "11111111-1111-4111-8111-111111111111",
+      methodRoute: "POST /api/van-days",
+      requestBody: { vanCode: "VAN-01" },
+      authorize: vi.fn(async () => undefined),
+      execute,
+      pool: database.pool,
+    };
+
+    await runStandaloneOperation(operation);
+    await expect(runStandaloneOperation(operation)).resolves.toMatchObject({
+      status: 201,
+      replayed: true,
+      body: successBody,
+    });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(operation.authorize).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects standalone key reuse when the request body changes", async () => {
+    const database = createDatabase();
+    const operation = {
+      actorId: "staff-1",
+      requestKey: "11111111-1111-4111-8111-111111111111",
+      methodRoute: "POST /api/van-days",
+      requestBody: { vanCode: "VAN-01" },
+      authorize: vi.fn(async () => undefined),
+      execute: vi.fn(async () => ({ status: 201, body: successBody })),
+      pool: database.pool,
+    };
+
+    await runStandaloneOperation(operation);
+    await expect(
+      runStandaloneOperation({
+        ...operation,
+        requestBody: { vanCode: "VAN-02" },
+      }),
+    ).rejects.toBeInstanceOf(OperationKeyReuseError);
   });
 });
