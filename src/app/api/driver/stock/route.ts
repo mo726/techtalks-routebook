@@ -20,6 +20,7 @@ const stockRowSchema = z.object({
   product_id: z.string().uuid().nullable(),
   product_name: z.string().nullable(),
   product_unit: z.string().nullable(),
+  product_price_cents: quantitySchema.nullable(),
   opening_quantity: quantitySchema.nullable(),
   available_quantity: quantitySchema.nullable(),
 });
@@ -46,6 +47,7 @@ export async function GET() {
        product.id AS product_id,
        product.name AS product_name,
        product.unit AS product_unit,
+       product.price_cents AS product_price_cents,
        load_item.opening_qty AS opening_quantity,
        load_item.opening_qty::bigint
          - COALESCE(SUM(invoice_line.quantity), 0)::bigint
@@ -60,8 +62,8 @@ export async function GET() {
       AND invoice_line.product_id = load_item.product_id
      GROUP BY
        day.id, day.van_code, day.business_date, day.state, day.revision,
-       product.id, product.name, product.unit, load_item.opening_qty
-     ORDER BY product.name NULLS LAST, product.id`,
+product.id, product.name, product.unit, product.price_cents,
+load_item.opening_qty     ORDER BY product.name NULLS LAST, product.id`,
     [access.profile.id],
   );
 
@@ -72,6 +74,7 @@ export async function GET() {
       !row.product_id ||
       row.product_name === null ||
       row.product_unit === null ||
+      row.product_price_cents === null ||
       row.opening_quantity === null ||
       row.available_quantity === null
     ) {
@@ -84,6 +87,7 @@ export async function GET() {
           id: row.product_id,
           name: row.product_name,
           unit: row.product_unit,
+          unitPriceCents: row.product_price_cents,
         },
         openingQuantity: row.opening_quantity,
         availableQuantity: row.available_quantity,

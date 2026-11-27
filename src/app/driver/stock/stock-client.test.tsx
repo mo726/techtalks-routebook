@@ -26,10 +26,11 @@ describe("DriverStockClient", () => {
             stock: [
               {
                 product: {
-                  id: "22222222-2222-4222-8222-222222222222",
-                  name: "Water",
-                  unit: "bottle",
-                },
+  id: "22222222-2222-4222-8222-222222222222",
+  name: "Water",
+  unit: "bottle",
+  unitPriceCents: 150,
+},
                 openingQuantity: 100,
                 availableQuantity: 85,
               },

@@ -1,3 +1,4 @@
+
 import { describe, expect, it, vi } from "vitest";
 import { ApiClientError, getDriverStock, getDriverVisits } from "./client";
 
@@ -55,6 +56,7 @@ describe("getDriverVisits", () => {
                 id: "44444444-4444-4444-8444-444444444444",
                 name: "Water",
                 unit: "bottle",
+                unitPriceCents: 150,
               },
               openingQuantity: 100,
               availableQuantity: 85,
@@ -73,7 +75,10 @@ describe("getDriverVisits", () => {
 
     it("reports failed stock reads instead of using an empty fallback", async () => {
       const fetcher = vi.fn(async () =>
-        Response.json({ error: { code: "DATABASE_UNAVAILABLE" } }, { status: 503 }),
+        Response.json(
+          { error: { code: "DATABASE_UNAVAILABLE" } },
+          { status: 503 },
+        ),
       );
 
       await expect(getDriverStock(undefined, fetcher)).rejects.toMatchObject({
