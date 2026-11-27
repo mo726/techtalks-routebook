@@ -49,6 +49,13 @@ implemented yet.
 A supervisor van-load demo is available at `/supervisor/van-load`. It uses
 mock data, does not persist changes, and is not connected to the database.
 
+## Shared UI components
+
+Reusable UI primitives are exported from `src/components/ui`: `Button`,
+`Input`, semantic responsive table components, `Alert`, `LoadingState`,
+`ErrorState`, and `EmptyState`. They provide consistent styling and accessible
+labels, status announcements, validation descriptions, and retry actions.
+
 The app reads the staff profile through its server-side `DATABASE_URL`
 connection. Keep the `routebook` schema private from the Supabase Data API.
 The migrations grant `routebook_runtime` only the privileges needed by the
