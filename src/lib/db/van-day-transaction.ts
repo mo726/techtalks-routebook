@@ -103,6 +103,21 @@ type RunVanDayOperationOptions = {
   pool?: Pick<Pool, "connect">;
 };
 
+type StandaloneOperationContext = {
+  client: PoolClient;
+  replayed: boolean;
+};
+
+type RunStandaloneOperationOptions = {
+  actorId: string;
+  requestKey: string;
+  methodRoute: string;
+  requestBody: unknown;
+  authorize: (context: StandaloneOperationContext) => Promise<void>;
+  execute: (context: StandaloneOperationContext) => Promise<TransactionOutcome>;
+  pool?: Pick<Pool, "connect">;
+};
+
 const maxAttempts = 3;
 const uuidPattern =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -362,6 +377,129 @@ export async function runVanDayOperation({
           actorId,
           requestKey,
         ],
+      );
+
+      if (completed.rowCount !== 1) {
+        throw new Error("The operation receipt could not be completed.");
+      }
+
+      await client.query("COMMIT");
+      transactionStarted = false;
+      return { status: outcome.status, body, replayed: false };
+    } catch (error) {
+      if (transactionStarted) {
+        try {
+          await rollback(client);
+        } catch {
+          // Preserve the transaction error; releasing the connection discards its state.
+        }
+      }
+
+      if (!isTransientDatabaseError(error)) {
+        throw error;
+      }
+
+      if (attempt === maxAttempts) {
+        throw new RetryableTransactionError(error);
+      }
+      shouldRetry = true;
+    } finally {
+      client.release();
+    }
+
+    if (shouldRetry) {
+      await retryDelay(attempt);
+    }
+  }
+
+  throw new RetryableTransactionError();
+}
+
+export async function runStandaloneOperation({
+  actorId,
+  requestKey,
+  methodRoute,
+  requestBody,
+  authorize,
+  execute,
+  pool,
+}: RunStandaloneOperationOptions): Promise<VanDayOperationResult> {
+  if (!uuidPattern.test(requestKey)) {
+    throw new InvalidOperationRequestError();
+  }
+
+  const database = pool ?? getPool();
+  const requestHash = hashRequest(methodRoute, "standalone", requestBody);
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const client = await database.connect();
+    let transactionStarted = false;
+    let shouldRetry = false;
+
+    try {
+      await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
+      transactionStarted = true;
+      await client.query("SET LOCAL lock_timeout = '2s'");
+      await client.query("SET LOCAL statement_timeout = '5s'");
+
+      const inserted = await client.query<{ id: string }>(
+        `INSERT INTO routebook.operations
+           (actor_id, request_key, method_route, request_hash)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (actor_id, request_key) DO NOTHING
+         RETURNING id`,
+        [actorId, requestKey, methodRoute, requestHash],
+      );
+
+      const replayed = inserted.rowCount === 0;
+      let existingOperation: OperationRow | undefined;
+
+      if (replayed) {
+        const existing = await client.query<OperationRow>(
+          `SELECT method_route, request_hash, http_status, response_body
+             FROM routebook.operations
+            WHERE actor_id = $1 AND request_key = $2
+            FOR UPDATE`,
+          [actorId, requestKey],
+        );
+        existingOperation = existing.rows[0];
+
+        if (!existingOperation) {
+          throw new Error("The operation receipt could not be read after a key conflict.");
+        }
+
+        if (
+          existingOperation.method_route !== methodRoute ||
+          existingOperation.request_hash !== requestHash
+        ) {
+          throw new OperationKeyReuseError();
+        }
+      }
+
+      const context = { client, replayed };
+      await authorize(context);
+
+      if (replayed) {
+        const body = parseSuccessBody(existingOperation?.response_body);
+        const status = existingOperation?.http_status;
+        if (!body || status === null || status === undefined) {
+          throw new Error("The completed operation receipt is invalid.");
+        }
+
+        await client.query("COMMIT");
+        transactionStarted = false;
+        return { status, body, replayed: true };
+      }
+
+      const outcome = await execute(context);
+      const body = validateOutcome(outcome);
+      const completed = await client.query(
+        `UPDATE routebook.operations
+            SET http_status = $1, response_body = $2::jsonb
+          WHERE actor_id = $3 AND request_key = $4
+            AND http_status IS NULL
+            AND response_body IS NULL`,
+        [outcome.status, JSON.stringify(body), actorId, requestKey],
       );
 
       if (completed.rowCount !== 1) {
