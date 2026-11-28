@@ -1,4 +1,14 @@
+
 import { z } from "zod";
+
+const invoiceSchema = z.object({
+  id: z.string().uuid(),
+  number: z.string().regex(/^\d+$/),
+  version: z.number().int().positive(),
+  totalCents: z.string().regex(/^\d+$/),
+  paidCents: z.string().regex(/^\d+$/),
+  balanceCents: z.string().regex(/^\d+$/),
+});
 
 const visitSchema = z.object({
   id: z.string().uuid(),
@@ -8,12 +18,7 @@ const visitSchema = z.object({
     name: z.string(),
     location: z.string(),
   }),
-  invoice: z
-    .object({
-      id: z.string().uuid(),
-      number: z.string().regex(/^\d+$/),
-    })
-    .nullable(),
+  invoice: invoiceSchema.nullable(),
 });
 
 export const driverVisitsResponseSchema = z.object({
@@ -35,4 +40,5 @@ export const driverVisitsResponseSchema = z.object({
 export type DriverVisitsResponse = z.infer<
   typeof driverVisitsResponseSchema
 >;
+
 export type DriverVisit = DriverVisitsResponse["data"]["visits"][number];
