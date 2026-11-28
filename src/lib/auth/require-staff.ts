@@ -6,9 +6,24 @@ import { isMissingAuthSession } from "./session-errors";
 import { createSupabaseServerClient } from "./supabase-server";
 import { findStaffProfile } from "./staff-profiles";
 
+const errorMessages: Record<string, string> = {
+  AUTH_SERVICE_UNAVAILABLE: "Authentication is temporarily unavailable.",
+  UNAUTHENTICATED: "Sign in to continue.",
+  STAFF_PROFILE_REQUIRED: "A staff profile is required.",
+  STAFF_PROFILE_INACTIVE: "This staff profile is inactive.",
+  ROLE_FORBIDDEN: "This role is not allowed.",
+};
+
 function apiError(status: number, code: string) {
   return NextResponse.json(
-    { error: { code } },
+    {
+      success: false,
+      error: {
+        code,
+        message: errorMessages[code] ?? "The request could not be authorized.",
+        retryable: status === 503,
+      },
+    },
     { status, headers: { "Cache-Control": "private, no-store" } },
   );
 }

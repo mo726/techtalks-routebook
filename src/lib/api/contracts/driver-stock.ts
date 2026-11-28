@@ -1,3 +1,4 @@
+
 import { z } from "zod";
 
 const stockItemSchema = z.object({
@@ -5,6 +6,7 @@ const stockItemSchema = z.object({
     id: z.string().uuid(),
     name: z.string(),
     unit: z.string(),
+    unitPriceCents: z.number().int().positive(),
   }),
   openingQuantity: z.number().int().positive(),
   availableQuantity: z.number().int().nonnegative(),

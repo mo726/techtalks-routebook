@@ -1,3 +1,4 @@
+
 import { NextResponse } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -45,6 +46,7 @@ describe("GET /api/driver/stock", () => {
           product_id: "33333333-3333-4333-8333-333333333333",
           product_name: "Water",
           product_unit: "bottle",
+          product_price_cents: 150,
           opening_quantity: 100,
           available_quantity: "85",
         },
@@ -71,6 +73,7 @@ describe("GET /api/driver/stock", () => {
               id: "33333333-3333-4333-8333-333333333333",
               name: "Water",
               unit: "bottle",
+              unitPriceCents: 150,
             },
             openingQuantity: 100,
             availableQuantity: 85,
@@ -79,10 +82,12 @@ describe("GET /api/driver/stock", () => {
       },
     });
     expect(query).toHaveBeenCalledWith(
-      expect.stringContaining("WHERE driver_id = $1 AND state = 'OPEN'"),
-      [driver.id],
+      expect.stringContaining("state = 'OPEN'"),
+      [null, false, driver.id],
     );
-    expect(query.mock.calls[0][0]).toContain("SUM(invoice_line.quantity)");
+    expect(query.mock.calls[0][0]).toContain(
+      "SUM(invoice_line.quantity)::bigint AS sold_quantity",
+    );
   });
 
   it("denies non-driver access without querying stock", async () => {
@@ -124,6 +129,7 @@ describe("GET /api/driver/stock", () => {
           product_id: "33333333-3333-4333-8333-333333333333",
           product_name: "Water",
           product_unit: "bottle",
+          product_price_cents: 150,
           opening_quantity: 100,
           available_quantity: "-1",
         },
