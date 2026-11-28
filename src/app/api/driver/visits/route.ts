@@ -1,3 +1,4 @@
+
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireStaff } from "@/lib/auth/require-staff";
@@ -19,10 +20,14 @@ const visitRowSchema = z.object({
   customer_location: z.string().nullable(),
   invoice_id: z.string().uuid().nullable(),
   invoice_number: z.string().nullable(),
+  invoice_version: z.number().int().positive().nullable(),
+  total_cents: z.string().nullable(),
+  paid_cents: z.string().nullable(),
 });
 
 export async function GET() {
   const access = await requireStaff(["DRIVER"]);
+
   if (!access.ok) {
     return access.response;
   }
@@ -46,17 +51,34 @@ export async function GET() {
        customer.name AS customer_name,
        customer.location AS customer_location,
        invoice.id AS invoice_id,
-       invoice.number::text AS invoice_number
+       invoice.number::text AS invoice_number,
+       invoice.version AS invoice_version,
+       COALESCE(lines.total_cents, 0)::text AS total_cents,
+       COALESCE(payments.paid_cents, 0)::text AS paid_cents
      FROM driver_day AS day
-     LEFT JOIN routebook.visits AS visit ON visit.day_id = day.id
-     LEFT JOIN routebook.customers AS customer ON customer.id = visit.customer_id
-     LEFT JOIN routebook.invoices AS invoice ON invoice.visit_id = visit.id
+     LEFT JOIN routebook.visits AS visit
+       ON visit.day_id = day.id
+     LEFT JOIN routebook.customers AS customer
+       ON customer.id = visit.customer_id
+     LEFT JOIN routebook.invoices AS invoice
+       ON invoice.visit_id = visit.id
+     LEFT JOIN LATERAL (
+       SELECT SUM(quantity::numeric * unit_price_cents) AS total_cents
+         FROM routebook.invoice_lines
+        WHERE invoice_id = invoice.id
+     ) AS lines ON true
+     LEFT JOIN LATERAL (
+       SELECT SUM(amount_cents) AS paid_cents
+         FROM routebook.payments
+        WHERE invoice_id = invoice.id
+     ) AS payments ON true
      ORDER BY visit.position NULLS LAST, visit.id`,
     [access.profile.id],
   );
 
   const rows = z.array(visitRowSchema).parse(result.rows);
   const first = rows[0];
+
   const visits = rows.flatMap((row) => {
     if (
       !row.visit_id ||
@@ -68,6 +90,28 @@ export async function GET() {
       return [];
     }
 
+    let invoice = null;
+
+    if (
+      row.invoice_id &&
+      row.invoice_number !== null &&
+      row.invoice_version !== null &&
+      row.total_cents !== null &&
+      row.paid_cents !== null
+    ) {
+      const total = BigInt(row.total_cents);
+      const paid = BigInt(row.paid_cents);
+
+      invoice = {
+        id: row.invoice_id,
+        number: row.invoice_number,
+        version: row.invoice_version,
+        totalCents: total.toString(),
+        paidCents: paid.toString(),
+        balanceCents: (total - paid).toString(),
+      };
+    }
+
     return [
       {
         id: row.visit_id,
@@ -77,10 +121,7 @@ export async function GET() {
           name: row.customer_name,
           location: row.customer_location,
         },
-        invoice:
-          row.invoice_id && row.invoice_number
-            ? { id: row.invoice_id, number: row.invoice_number }
-            : null,
+        invoice,
       },
     ];
   });

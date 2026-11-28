@@ -41,6 +41,28 @@ export type CreateDriverSaleInput = {
   requestKey: string;
 };
 
+export type PaymentResponse = {
+  success: true;
+  data: {
+    paymentId: string;
+    amountCents: string;
+    invoiceVersion: number;
+    totalPaidCents: string;
+    balanceCents: string;
+  };
+};
+
+export type OperationReceiptResponse = {
+  success: true;
+  data: {
+    requestKey: string;
+    methodRoute: string;
+    originalStatus: number;
+    originalResponse: unknown;
+    createdAt: string;
+  };
+};
+
 export class ApiClientError extends Error {
   constructor(
     message: string,
@@ -267,6 +289,167 @@ export async function createDriverSale(
   if (!parsed.success) {
     throw new ApiClientError(
       "The sale service returned an invalid response.",
+      502,
+      "INVALID_RESPONSE",
+    );
+  }
+
+  return parsed.data;
+}
+
+async function getCsrfToken(fetcher: typeof fetch): Promise<string> {
+  let response: Response;
+
+  try {
+    response = await fetcher("/api/csrf", {
+      method: "GET",
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    });
+  } catch {
+    throw new ApiClientError(
+      "The security token service could not be reached.",
+      0,
+      "NETWORK_ERROR",
+    );
+  }
+
+  const payload = await readJson(response);
+
+  if (!response.ok) {
+    throw getApiError(payload, response.status, "Could not obtain the security token.");
+  }
+
+  if (
+    typeof payload !== "object" ||
+    payload === null ||
+    !("token" in payload) ||
+    typeof payload.token !== "string"
+  ) {
+    throw new ApiClientError(
+      "The security token response is invalid.",
+      502,
+      "INVALID_RESPONSE",
+    );
+  }
+
+  return payload.token;
+}
+
+export async function recordPayment(
+  invoiceId: string,
+  amountCents: number,
+  expectedInvoiceVersion: number,
+  requestKey: string,
+  fetcher: typeof fetch = fetch,
+): Promise<PaymentResponse> {
+  const csrfToken = await getCsrfToken(fetcher);
+  let response: Response;
+
+  try {
+    response = await fetcher(
+      `/api/invoices/${encodeURIComponent(invoiceId)}/payments`,
+      {
+        method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "Idempotency-Key": requestKey,
+          "X-CSRF-Token": csrfToken,
+        },
+        body: JSON.stringify({
+          amountCents: String(amountCents),
+          expectedInvoiceVersion,
+        }),
+      },
+    );
+  } catch {
+    throw new ApiClientError(
+      "Payment confirmation could not be received.",
+      0,
+      "NETWORK_ERROR",
+    );
+  }
+
+  const payload = await readJson(response);
+
+  if (!response.ok) {
+    throw getApiError(payload, response.status, "The payment could not be recorded.");
+  }
+
+  const parsed = z
+    .object({
+      success: z.literal(true),
+      data: z.object({
+        paymentId: z.string().uuid(),
+        amountCents: z.string().regex(/^\d+$/),
+        invoiceVersion: z.number().int().positive(),
+        totalPaidCents: z.string().regex(/^\d+$/),
+        balanceCents: z.string().regex(/^\d+$/),
+      }),
+    })
+    .safeParse(payload);
+
+  if (!parsed.success) {
+    throw new ApiClientError(
+      "The payment service returned an invalid response.",
+      502,
+      "INVALID_RESPONSE",
+    );
+  }
+
+  return parsed.data;
+}
+
+export async function getOperationReceipt(
+  requestKey: string,
+  fetcher: typeof fetch = fetch,
+): Promise<OperationReceiptResponse> {
+  let response: Response;
+
+  try {
+    response = await fetcher(
+      `/api/operations/${encodeURIComponent(requestKey)}`,
+      {
+        method: "GET",
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      },
+    );
+  } catch {
+    throw new ApiClientError(
+      "The operation status could not be checked.",
+      0,
+      "NETWORK_ERROR",
+    );
+  }
+
+  const payload = await readJson(response);
+
+  if (!response.ok) {
+    throw getApiError(payload, response.status, "The operation status could not be checked.");
+  }
+
+  const parsed = z
+    .object({
+      success: z.literal(true),
+      data: z.object({
+        requestKey: z.string().uuid(),
+        methodRoute: z.string(),
+        originalStatus: z.number().int(),
+        originalResponse: z.unknown(),
+        createdAt: z.string(),
+      }),
+    })
+    .safeParse(payload);
+
+  if (!parsed.success) {
+    throw new ApiClientError(
+      "The operation receipt is invalid.",
       502,
       "INVALID_RESPONSE",
     );

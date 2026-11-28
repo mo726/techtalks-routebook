@@ -49,6 +49,9 @@ describe("GET /api/driver/visits", () => {
           customer_location: "Beirut",
           invoice_id: "55555555-5555-4555-8555-555555555555",
           invoice_number: "12",
+          invoice_version: 2,
+          total_cents: "1000",
+          paid_cents: "200",
         },
       ],
     });
@@ -79,6 +82,10 @@ describe("GET /api/driver/visits", () => {
             invoice: {
               id: "55555555-5555-4555-8555-555555555555",
               number: "12",
+              version: 2,
+              totalCents: "1000",
+              paidCents: "200",
+              balanceCents: "800",
             },
           },
         ],
