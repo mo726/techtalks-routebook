@@ -1,5 +1,9 @@
+
 node_modules/
 .next/
 *.tsbuildinfo
+coverage/
+
+# Environment variables
 .env*
 !.env.example

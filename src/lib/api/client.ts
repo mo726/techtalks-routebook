@@ -236,8 +236,13 @@ export async function createDriverSale(
         Accept: "application/json",
         "Content-Type": "application/json",
         "X-CSRF-Token": csrfToken,
+        "Idempotency-Key": input.requestKey,
       },
-      body: JSON.stringify(input),
+      body: JSON.stringify({
+        visitId: input.visitId,
+        productId: input.productId,
+        quantity: input.quantity,
+      }),
     });
   } catch {
     throw new ApiClientError(

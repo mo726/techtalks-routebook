@@ -16,7 +16,14 @@ export function validateCsrfRequest(
 
   if (!hasValidOrigin(request.headers.get("origin"), expectedOrigin)) {
     return NextResponse.json(
-      { error: { code: "INVALID_ORIGIN" } },
+      {
+        success: false,
+        error: {
+          code: "INVALID_ORIGIN",
+          message: "The request origin is not allowed.",
+          retryable: false,
+        },
+      },
       { status: 403, headers: { "Cache-Control": "private, no-store" } },
     );
   }
@@ -30,7 +37,14 @@ export function validateCsrfRequest(
 
   if (!isValid) {
     return NextResponse.json(
-      { error: { code: "INVALID_CSRF_TOKEN" } },
+      {
+        success: false,
+        error: {
+          code: "INVALID_CSRF_TOKEN",
+          message: "The CSRF token is missing or invalid.",
+          retryable: false,
+        },
+      },
       { status: 403, headers: { "Cache-Control": "private, no-store" } },
     );
   }

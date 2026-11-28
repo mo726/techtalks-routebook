@@ -12,6 +12,7 @@ import {
 
 import type { DriverVisitsResponse } from "@/lib/api/contracts/driver-visits";
 import type { DriverStockResponse } from "@/lib/api/contracts/driver-stock";
+import { Alert, EmptyState, ErrorState, LoadingState } from "@/components/ui";
 
 type PageData = {
   visits: DriverVisitsResponse["data"];
@@ -134,43 +135,19 @@ export function DriverVisitsClient() {
   }
 
   if (state.status === "loading") {
-    return (
-      <section
-        aria-live="polite"
-        className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
-      >
-        <p className="text-sm text-slate-600">
-          Loading your visits and van stock...
-        </p>
-      </section>
-    );
+    return <LoadingState label="Loading your assigned visits…" />;
   }
 
   if (state.status === "error") {
     return (
-      <section
-        aria-live="polite"
-        className="rounded-2xl border border-red-200 bg-white p-6 shadow-sm"
-      >
-        <h1 className="text-xl font-semibold text-slate-950">
-          Could not load driver data
-        </h1>
-
-        <p className="mt-2 text-sm text-slate-600">
-          {state.message}
-        </p>
-
-        <button
-          className="mt-5 rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-800"
-          onClick={() => {
-            setState({ status: "loading" });
-            setReloadKey((key) => key + 1);
-          }}
-          type="button"
-        >
-          Try again
-        </button>
-      </section>
+      <ErrorState
+        message={state.message}
+        onRetry={() => {
+          setState({ status: "loading" });
+          setReloadKey((key) => key + 1);
+        }}
+        title="Could not load driver data"
+      />
     );
   }
 
@@ -208,11 +185,7 @@ export function DriverVisitsClient() {
               {vanDay.businessDate}
             </time>
           </p>
-        ) : (
-          <p className="mt-3 text-sm text-slate-600">
-            No open van day is currently assigned to you.
-          </p>
-        )}
+        ) : null}
       </header>
 
       {saleMessage && (
@@ -224,8 +197,17 @@ export function DriverVisitsClient() {
         </p>
       )}
 
+      {!vanDay ? (
+        <Alert title="No open van day" variant="info">
+          No open van day is currently assigned to you.
+        </Alert>
+      ) : null}
+
       {vanDay && visits.length > 0 ? (
-        <ol aria-label="Assigned customer visits" className="space-y-3">
+        <ol
+          aria-label="Assigned customer visits"
+          className="space-y-3"
+        >
           {visits.map((visit) => (
             <li
               className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
@@ -380,9 +362,10 @@ export function DriverVisitsClient() {
           ))}
         </ol>
       ) : vanDay ? (
-        <p className="rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-sm text-slate-600">
-          No customer visits have been assigned to this van day yet.
-        </p>
+        <EmptyState
+          description="No customer visits have been assigned to this van day yet."
+          title="No assigned visits"
+        />
       ) : null}
 
       {vanDay && stock.length === 0 && (

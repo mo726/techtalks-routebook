@@ -1,11 +1,15 @@
 # RouteBook
 
+RouteBook is a Next.js App Router application with TypeScript and Tailwind
+CSS 4. The domain work includes exact money arithmetic, validation schemas,
+and payment service logic.
+
 ## Getting started
 
-Install dependencies and start the development server:
+Node.js 24 is the supported runtime (see `.nvmrc`).
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
@@ -42,6 +46,16 @@ van stock at `/driver/stock` for drivers with an open van day. These pages read
 only data for the signed-in driver. Other navigation destinations are not
 implemented yet.
 
+A supervisor van-load demo is available at `/supervisor/van-load`. It uses
+mock data, does not persist changes, and is not connected to the database.
+
+## Shared UI components
+
+Reusable UI primitives are exported from `src/components/ui`: `Button`,
+`Input`, semantic responsive table components, `Alert`, `LoadingState`,
+`ErrorState`, and `EmptyState`. They provide consistent styling and accessible
+labels, status announcements, validation descriptions, and retry actions.
+
 The app reads the staff profile through its server-side `DATABASE_URL`
 connection. Keep the `routebook` schema private from the Supabase Data API.
 The migrations grant `routebook_runtime` only the privileges needed by the
@@ -54,6 +68,36 @@ Future van-day mutation handlers should use
 idempotency-receipt flow. The helper does not create business API routes or
 pages; each handler remains responsible for authorization and its domain
 validation.
+
+## Van-day API
+
+The supervisor van-day API is database-backed:
+
+- `GET /api/van-days` lists van days; drivers see only their own, while
+  supervisors also receive active driver choices. Lists accept `cursor` and
+  `limit` (25 by default, maximum 100).
+- `POST /api/van-days` creates a PREPARING day for an active driver.
+- `GET` and `POST /api/van-days/{id}/visits` read visits within the caller's
+  scope or append an active customer visit while the day is PREPARING.
+- `PUT /api/van-days/{id}/load` replaces the complete load only while the day
+  is PREPARING and requires the current `expectedRevision`.
+- `POST /api/van-days/{id}/open` opens a PREPARING day with the current
+  `expectedRevision`, an active driver, and at least one loaded product.
+- `GET /api/van-days/{id}/stock` returns opening and available stock. Drivers
+  can read only their assigned day; supervisors can read any day. Available
+  quantities are derived from opening load minus invoice-line quantities, so
+  invoice corrections are reflected. The driver workspace continues to use
+  `GET /api/driver/stock` for the driver's current open day.
+
+All writes require same-origin CSRF validation and a UUID `Idempotency-Key`.
+Day updates lock the van-day row and commit their operation receipt atomically.
+The read endpoints are private and non-cacheable.
+
+## Money and payments
+
+Exact currency arithmetic, invoice validation, and payment service logic are
+implemented in `src/lib/money` and `src/lib/payments`. The accompanying
+README files describe their supported operations and constraints.
 
 Useful checks:
 

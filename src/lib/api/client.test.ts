@@ -1,6 +1,11 @@
 
 import { describe, expect, it, vi } from "vitest";
-import { ApiClientError, getDriverStock, getDriverVisits } from "./client";
+import {
+  ApiClientError,
+  createDriverSale,
+  getDriverStock,
+  getDriverVisits,
+} from "./client";
 
 const responseBody = {
   success: true,
@@ -118,5 +123,56 @@ describe("getDriverVisits", () => {
       status: 0,
       code: "NETWORK_ERROR",
     });
+  });
+
+  it("sends sales with a CSRF token and an idempotency header", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json({ token: "csrf-token" }))
+      .mockResolvedValueOnce(
+        Response.json({
+          success: true,
+          data: {
+            invoice: {
+              id: "55555555-5555-4555-8555-555555555555",
+              number: "12",
+            },
+            sale: {
+              productId: "44444444-4444-4444-8444-444444444444",
+              quantity: 2,
+              unitPriceCents: 150,
+              totalCents: 300,
+            },
+          },
+        }),
+      );
+
+    await expect(
+      createDriverSale(
+        {
+          visitId: "22222222-2222-4222-8222-222222222222",
+          productId: "44444444-4444-4444-8444-444444444444",
+          quantity: 2,
+          requestKey: "33333333-3333-4333-8333-333333333333",
+        },
+        fetcher,
+      ),
+    ).resolves.toMatchObject({ success: true });
+
+    expect(fetcher).toHaveBeenNthCalledWith(
+      2,
+      "/api/driver/sales",
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          "X-CSRF-Token": "csrf-token",
+          "Idempotency-Key": "33333333-3333-4333-8333-333333333333",
+        }),
+        body: JSON.stringify({
+          visitId: "22222222-2222-4222-8222-222222222222",
+          productId: "44444444-4444-4444-8444-444444444444",
+          quantity: 2,
+        }),
+      }),
+    );
   });
 });
