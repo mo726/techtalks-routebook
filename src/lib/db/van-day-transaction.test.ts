@@ -430,4 +430,30 @@ describe("runStandaloneOperation", () => {
       }),
     ).rejects.toBeInstanceOf(OperationKeyReuseError);
   });
+
+  it("reconnects and replays standalone receipts when commit succeeds before a disconnect", async () => {
+    const database = createDatabase();
+    const execute = vi.fn(async () => ({ status: 201, body: successBody }));
+    const operation = {
+      actorId: "staff-1",
+      requestKey: "11111111-1111-4111-8111-111111111111",
+      methodRoute: "POST /api/van-days",
+      requestBody: { vanCode: "VAN-01" },
+      authorize: vi.fn(async () => undefined),
+      execute,
+      pool: database.pool,
+    };
+    database.disconnectOnCommit({ committed: true });
+
+    await expect(runStandaloneOperation(operation)).resolves.toEqual({
+      status: 201,
+      body: successBody,
+      replayed: true,
+    });
+    expect(database.connect).toHaveBeenCalledTimes(2);
+    expect(database.release).toHaveBeenNthCalledWith(1, true);
+    expect(database.release).toHaveBeenNthCalledWith(2, false);
+    expect(database.client.listenerCount("error")).toBe(0);
+    expect(execute).toHaveBeenCalledOnce();
+  });
 });

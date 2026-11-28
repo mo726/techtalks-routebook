@@ -488,11 +488,16 @@ export async function runStandaloneOperation({
   const requestHash = hashRequest(methodRoute, "standalone", requestBody);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const client = await database.connect();
+    let client: PoolClient | undefined;
     let transactionStarted = false;
-    let shouldRetry = false;
+    let discardConnection = false;
+    const onConnectionError = () => {
+      discardConnection = true;
+    };
 
     try {
+      client = await database.connect();
+      client.on("error", onConnectionError);
       await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
       transactionStarted = true;
       await client.query("SET LOCAL lock_timeout = '2s'");
@@ -566,29 +571,35 @@ export async function runStandaloneOperation({
       transactionStarted = false;
       return { status: outcome.status, body, replayed: false };
     } catch (error) {
-      if (transactionStarted) {
+      const code = databaseErrorCode(error);
+      discardConnection ||= isDatabaseConnectionError(error, code);
+      const retryable =
+        discardConnection ||
+        (code !== undefined && retryableTransactionCodes.has(code));
+
+      if (client && transactionStarted && !discardConnection) {
         try {
           await rollback(client);
         } catch {
-          // Preserve the transaction error; releasing the connection discards its state.
+          discardConnection = true;
         }
       }
 
-      if (!isTransientDatabaseError(error)) {
+      if (!retryable) {
         throw error;
       }
 
       if (attempt === maxAttempts) {
         throw new RetryableTransactionError(error);
       }
-      shouldRetry = true;
     } finally {
-      client.release();
+      if (client) {
+        client.removeListener("error", onConnectionError);
+        client.release(discardConnection);
+      }
     }
 
-    if (shouldRetry) {
-      await retryDelay(attempt);
-    }
+    await retryDelay(attempt);
   }
 
   throw new RetryableTransactionError();
