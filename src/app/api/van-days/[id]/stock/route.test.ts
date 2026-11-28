@@ -31,7 +31,7 @@ const stockData = {
     revision: 3,
   },
   stock: [{
-    product: { id: productId, name: "Water", unit: "bottle" },
+    product: { id: productId, name: "Water", unit: "bottle", unitPriceCents: 150 },
     openingQuantity: 100,
     availableQuantity: 85,
   }],
@@ -66,7 +66,14 @@ describe("GET /api/van-days/[id]/stock", () => {
     });
     await expect(response.json()).resolves.toEqual({
       success: true,
-      data: stockData,
+      data: {
+        ...stockData,
+        stock: [{
+          product: { id: productId, name: "Water", unit: "bottle" },
+          openingQuantity: 100,
+          availableQuantity: 85,
+        }],
+      },
     });
   });
 

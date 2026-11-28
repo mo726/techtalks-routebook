@@ -8,6 +8,11 @@ const quantitySchema = z
   .transform((value) => Number(value))
   .pipe(z.number().int().safe().nonnegative());
 
+const priceSchema = z
+  .union([z.number(), z.string().regex(/^\d+$/)])
+  .transform((value) => Number(value))
+  .pipe(z.number().int().safe().positive());
+
 const stockRowSchema = z.object({
   day_id: z.string().uuid(),
   van_code: z.string(),
@@ -17,6 +22,7 @@ const stockRowSchema = z.object({
   product_id: z.string().uuid().nullable(),
   product_name: z.string().nullable(),
   product_unit: z.string().nullable(),
+  product_price_cents: priceSchema.nullable(),
   opening_quantity: quantitySchema.nullable(),
   available_quantity: quantitySchema.nullable(),
 });
@@ -30,7 +36,7 @@ export type VanDayStockData = {
     revision: number;
   };
   stock: Array<{
-    product: { id: string; name: string; unit: string };
+    product: { id: string; name: string; unit: string; unitPriceCents: number };
     openingQuantity: number;
     availableQuantity: number;
   }>;
@@ -72,6 +78,7 @@ export async function getVanDayStock({
        product.id::text AS product_id,
        product.name AS product_name,
        product.unit AS product_unit,
+       product.price_cents AS product_price_cents,
        load_item.opening_qty AS opening_quantity,
        load_item.opening_qty::bigint
          - COALESCE(sales.sold_quantity, 0)::bigint AS available_quantity
@@ -108,6 +115,7 @@ export async function getVanDayStock({
         !row.product_id ||
         row.product_name === null ||
         row.product_unit === null ||
+        row.product_price_cents === null ||
         row.opening_quantity === null ||
         row.available_quantity === null
       ) {
@@ -119,6 +127,7 @@ export async function getVanDayStock({
           id: row.product_id,
           name: row.product_name,
           unit: row.product_unit,
+          unitPriceCents: row.product_price_cents,
         },
         openingQuantity: row.opening_quantity,
         availableQuantity: row.available_quantity,

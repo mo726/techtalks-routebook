@@ -24,6 +24,7 @@ const row = {
   product_id: productId,
   product_name: "Water",
   product_unit: "bottle",
+  product_price_cents: 150,
   opening_quantity: 100,
   available_quantity: "85",
 };
@@ -48,7 +49,7 @@ describe("getVanDayStock", () => {
         revision: 3,
       },
       stock: [{
-        product: { id: productId, name: "Water", unit: "bottle" },
+        product: { id: productId, name: "Water", unit: "bottle", unitPriceCents: 150 },
         openingQuantity: 100,
         availableQuantity: 85,
       }],
@@ -70,6 +71,7 @@ describe("getVanDayStock", () => {
       product_id: null,
       product_name: null,
       product_unit: null,
+      product_price_cents: null,
       opening_quantity: null,
       available_quantity: null,
     }]);
