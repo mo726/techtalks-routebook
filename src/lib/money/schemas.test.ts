@@ -229,6 +229,22 @@ describe("correctInvoiceInputSchema", () => {
       }).success,
     ).toBe(false);
   });
+
+  it.each([
+    ["😀".repeat(4), false],
+    ["😀".repeat(5), true],
+    ["😀".repeat(500), true],
+    ["😀".repeat(501), false],
+    ["Reason with a NUL\0", false],
+    ["Invalid Unicode \uD800", false],
+  ])("validates the reason as PostgreSQL text (%j)", (reason, valid) => {
+    expect(correctInvoiceInputSchema.safeParse({
+      lineId: UUID_A,
+      newQuantity: 15,
+      expectedInvoiceVersion: 2,
+      reason,
+    }).success).toBe(valid);
+  });
 });
 
 describe("verifyOpeningBalanceInputSchema", () => {

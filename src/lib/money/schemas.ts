@@ -120,8 +120,11 @@ export const correctInvoiceInputSchema = z.strictObject({
   reason: z
     .string()
     .trim()
-    .min(5, "A correction reason must be at least 5 characters.")
-    .max(500, "A correction reason must be at most 500 characters."),
+    .refine((reason) => !reason.includes("\0") && reason.isWellFormed(), "Enter a valid text reason.")
+    .refine((reason) => {
+      const length = Array.from(reason).length;
+      return length >= 5 && length <= 500;
+    }, "A correction reason must be between 5 and 500 characters."),
 });
 
 export const verifyOpeningBalanceInputSchema = z.strictObject({
