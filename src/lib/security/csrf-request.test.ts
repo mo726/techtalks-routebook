@@ -50,6 +50,20 @@ describe("validateCsrfRequest", () => {
     expect(response?.status).toBe(403);
   });
 
+  it("rejects a missing token and a missing CSRF cookie", () => {
+    vi.stubEnv("APP_ORIGIN", "https://routebook.example");
+    vi.stubEnv("CSRF_SECRET", secret);
+
+    const missingToken = validateCsrfRequest(makeRequest({ token: "" }), null);
+    const noCookie = new NextRequest("https://routebook.example/api/customers", {
+      method: "POST",
+      headers: { origin: "https://routebook.example", "x-csrf-token": createCsrfToken(null, nonce, secret) },
+    });
+
+    expect(missingToken?.status).toBe(403);
+    expect(validateCsrfRequest(noCookie, null)?.status).toBe(403);
+  });
+
   it("rejects tokens bound to a different authenticated identity", () => {
     vi.stubEnv("APP_ORIGIN", "https://routebook.example");
     vi.stubEnv("CSRF_SECRET", secret);
